@@ -2,6 +2,7 @@
 This implementation covers AWS S3, Google Cloud Storage (GCS), and Azure Blob Storage, prioritizing the exact interfaces and Pre-signed URL generation you requested.
 1. Project Architecture
 Create the following directory structure for your project:
+'''bash
 storage-abstraction/
 ├── go.mod
 ├── main.go             # Example usage
@@ -12,7 +13,7 @@ storage-abstraction/
     ├── s3.go           # AWS S3 implementation
     ├── gcs.go          # Google Cloud Storage implementation
     └── azure.go        # Azure Blob Storage implementation
-
+'''
 To initialize the project and get the required dependencies, run:
 go mod init storage-abstraction
 go get github.com/aws/aws-sdk-go-v2/config
@@ -23,6 +24,7 @@ go get github.com/Azure/azure-sdk-for-go/sdk/storage/azblob
 2. Core Abstraction (storage/interface.go & storage/errors.go)
 This defines the contract all providers must follow, alongside standard errors to ensure your application code doesn't need to know which cloud provider is throwing the error.
 storage/errors.go
+'''go
 package storage
 
 import "errors"
@@ -381,5 +383,5 @@ func main() {
 
 	fmt.Printf("Temporary access URL: %s\n", url)
 }
-
+'''
 Would you like me to walk through how to mock this ObjectStore interface using a tool like Mockery so you can write unit tests for your application code?
