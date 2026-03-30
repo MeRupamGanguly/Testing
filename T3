@@ -1,0 +1,72 @@
+'''go
+package storage
+
+import (
+	"context"
+	"io"
+	"time"
+
+	"cloud.google.com/go/storage"
+)
+
+type GCSStore struct {
+	client *storage.Client
+	bucket string
+}
+
+func NewGCSStore(ctx context.Context, bucket string) (*GCSStore, error) {
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &GCSStore{
+		client: client,
+		bucket: bucket,
+	}, nil
+}
+
+func (g *GCSStore) Put(ctx context.Context, key string, data io.Reader, contentType string) error {
+	obj := g.client.Bucket(g.bucket).Object(key)
+	w := obj.NewWriter(ctx)
+	w.ContentType = contentType
+
+	if _, err := io.Copy(w, data); err != nil {
+		w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+func (g *GCSStore) Get(ctx context.Context, key string, dst io.Writer) error {
+	r, err := g.client.Bucket(g.bucket).Object(key).NewReader(ctx)
+	if err != nil {
+		if err == storage.ErrObjectNotExist {
+			return ErrObjectNotFound
+		}
+		return err
+	}
+	defer r.Close()
+
+	_, err = io.Copy(dst, r)
+	return err
+}
+
+func (g *GCSStore) Delete(ctx context.Context, key string) error {
+	err := g.client.Bucket(g.bucket).Object(key).Delete(ctx)
+	if err == storage.ErrObjectNotExist {
+		return ErrObjectNotFound
+	}
+	return err
+}
+
+func (g *GCSStore) GetSignedURL(ctx context.Context, key string, method string, expires time.Duration) (string, error) {
+	opts := &storage.SignedURLOptions{
+		Method:  method,
+		Expires: time.Now().Add(expires),
+	}
+	// Note: If running on GCP Workload Identity without a direct Service Account JSON,
+	// you may need to use storage.SignBytes or provide GoogleAccessID/PrivateKey in opts.
+	return g.client.Bucket(g.bucket).SignedURL(key, opts)
+}
+
+'''
