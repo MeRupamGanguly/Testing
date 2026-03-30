@@ -1,0 +1,94 @@
+'''go
+
+package storage
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+type S3Store struct {
+	client        *s3.Client
+	presignClient *s3.PresignClient
+	bucket        string
+}
+
+func NewS3Store(ctx context.Context, region, bucket string) (*S3Store, error) {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, err
+	}
+
+	client := s3.NewFromConfig(cfg)
+	presignClient := s3.NewPresignClient(client)
+
+	return &S3Store{
+		client:        client,
+		presignClient: presignClient,
+		bucket:        bucket,
+	}, nil
+}
+
+func (s *S3Store) Put(ctx context.Context, key string, data io.Reader, contentType string) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		Body:        data,
+		ContentType: aws.String(contentType),
+	})
+	return err
+}
+
+func (s *S3Store) Get(ctx context.Context, key string, dst io.Writer) error {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return err // In production, check for s3.ErrCodeNoSuchKey and map to ErrObjectNotFound
+	}
+	defer out.Body.Close()
+	_, err = io.Copy(dst, out.Body)
+	return err
+}
+
+func (s *S3Store) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	return err
+}
+
+func (s *S3Store) GetSignedURL(ctx context.Context, key string, method string, expires time.Duration) (string, error) {
+	var req *s3.PresignedHTTPRequest
+	var err error
+
+	switch method {
+	case "GET":
+		req, err = s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}, s3.WithPresignExpires(expires))
+	case "PUT":
+		req, err = s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}, s3.WithPresignExpires(expires))
+	default:
+		return "", ErrInvalidMethod
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("failed to sign request: %w", err)
+	}
+	return req.URL, nil
+}
+
+'''
