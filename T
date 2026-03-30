@@ -1,0 +1,34 @@
+'''go
+
+package storage
+
+import (
+	"context"
+	"fmt"
+)
+
+// Config holds the necessary configuration for all providers.
+// In a real app, populate this via env vars or a config file.
+type Config struct {
+	Provider          string // "s3", "gcs", "azure"
+	BucketOrContainer string
+	Region            string // For S3
+	AzureAccountName  string // For Azure SAS
+	AzureAccountKey   string // For Azure SAS
+}
+
+// NewObjectStore returns the concrete implementation of ObjectStore
+func NewObjectStore(ctx context.Context, cfg Config) (ObjectStore, error) {
+	switch cfg.Provider {
+	case "s3":
+		return NewS3Store(ctx, cfg.Region, cfg.BucketOrContainer)
+	case "gcs":
+		return NewGCSStore(ctx, cfg.BucketOrContainer)
+	case "azure":
+		return NewAzureStore(cfg.AzureAccountName, cfg.AzureAccountKey, cfg.BucketOrContainer)
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotSupport, cfg.Provider)
+	}
+}
+
+'''
