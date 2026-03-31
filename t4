@@ -1,0 +1,362 @@
+1. The Core Interface (provider.go)
+This file holds your interface. Any code in your application that needs to interact with storage will require this interface, completely ignorant of whether it's talking to AWS or GCP.
+
+```go
+package cloudstorage
+
+import (
+	"context"
+	"io"
+	"time"
+)
+
+// StorageProvider defines the contract for cloud storage operations.
+type StorageProvider interface {
+	Upload(ctx context.Context, bucket, object string, content io.Reader) error
+	Download(ctx context.Context, bucket, object string) (io.ReadCloser, error)
+	Delete(ctx context.Context, bucket, object string) error
+	List(ctx context.Context, bucket, prefix string) ([]string, error)
+	GetSignedURL(ctx context.Context, bucket, object string, expires time.Duration) (string, error)
+	// Modify performs an overwrite of an existing object
+	Modify(ctx context.Context, bucket, object string, content io.Reader) error
+}
+```
+
+2. The Google Cloud Implementation (gcs.go)
+This implementation utilizes the Application Default Credentials (ADC) we discussed earlier, ensuring no hardcoded keys are required.
+
+Dependencies needed: go get cloud.google.com/go/storage and go get google.golang.org/api/iterator
+
+```go
+package cloudstorage
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"time"
+
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
+)
+
+type GCSProvider struct {
+	client *storage.Client
+}
+
+// NewGCSProvider initializes a new GCS client using Application Default Credentials.
+func NewGCSProvider(ctx context.Context) (*GCSProvider, error) {
+	client, err := storage.NewClient(ctx, storage.WithJSONReads())
+	if err != nil {
+		return nil, fmt.Errorf("gcs client init failed: %w", err)
+	}
+	return &GCSProvider{client: client}, nil
+}
+
+func (g *GCSProvider) Upload(ctx context.Context, bucket, object string, content io.Reader) error {
+	writer := g.client.Bucket(bucket).Object(object).NewWriter(ctx)
+	if _, err := io.Copy(writer, content); err != nil {
+		writer.Close()
+		return fmt.Errorf("gcs upload failed: %w", err)
+	}
+	return writer.Close()
+}
+
+func (g *GCSProvider) Download(ctx context.Context, bucket, object string) (io.ReadCloser, error) {
+	reader, err := g.client.Bucket(bucket).Object(object).NewReader(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("gcs download failed: %w", err)
+	}
+	return reader, nil
+}
+
+func (g *GCSProvider) Delete(ctx context.Context, bucket, object string) error {
+	err := g.client.Bucket(bucket).Object(object).Delete(ctx)
+	if err != nil {
+		return fmt.Errorf("gcs delete failed: %w", err)
+	}
+	return nil
+}
+
+func (g *GCSProvider) List(ctx context.Context, bucket, prefix string) ([]string, error) {
+	it := g.client.Bucket(bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	var objects []string
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gcs list failed: %w", err)
+		}
+		objects = append(objects, attrs.Name)
+	}
+	return objects, nil
+}
+
+func (g *GCSProvider) GetSignedURL(ctx context.Context, bucket, object string, expires time.Duration) (string, error) {
+	opts := &storage.SignedURLOptions{
+		Scheme:  storage.SigningSchemeV4,
+		Method:  "GET",
+		Expires: time.Now().Add(expires),
+	}
+	
+	// Note: If running on GCP compute with ADC, the service account needs 
+	// the "Service Account Token Creator" role to sign URLs.
+	url, err := g.client.Bucket(bucket).SignedURL(object, opts)
+	if err != nil {
+		return "", fmt.Errorf("gcs sign url failed: %w", err)
+	}
+	return url, nil
+}
+
+func (g *GCSProvider) Modify(ctx context.Context, bucket, object string, content io.Reader) error {
+	// In object storage, modifying is identical to overwriting (uploading again)
+	return g.Upload(ctx, bucket, object, content)
+}
+```
+3. The AWS S3 Implementation (s3.go)
+This uses the modern AWS SDK v2. Like GCP, AWS SDK v2 automatically looks for environmental credentials or IAM roles attached to EC2 instances/ECS tasks.
+
+Dependencies needed: go get github.com/aws/aws-sdk-go-v2/aws, go get github.com/aws/aws-sdk-go-v2/config, go get github.com/aws/aws-sdk-go-v2/service/s3
+
+```go
+package cloudstorage
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+type S3Provider struct {
+	client        *s3.Client
+	presignClient *s3.PresignClient
+}
+
+// NewS3Provider initializes a new S3 client automatically loading AWS credentials.
+func NewS3Provider(ctx context.Context, region string) (*S3Provider, error) {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("s3 config load failed: %w", err)
+	}
+
+	client := s3.NewFromConfig(cfg)
+	presignClient := s3.NewPresignClient(client)
+
+	return &S3Provider{
+		client:        client,
+		presignClient: presignClient,
+	}, nil
+}
+
+func (s *S3Provider) Upload(ctx context.Context, bucket, object string, content io.Reader) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(object),
+		Body:   content,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 upload failed: %w", err)
+	}
+	return nil
+}
+
+func (s *S3Provider) Download(ctx context.Context, bucket, object string) (io.ReadCloser, error) {
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(object),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("s3 download failed: %w", err)
+	}
+	return result.Body, nil
+}
+
+func (s *S3Provider) Delete(ctx context.Context, bucket, object string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(object),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 delete failed: %w", err)
+	}
+	return nil
+}
+
+func (s *S3Provider) List(ctx context.Context, bucket, prefix string) ([]string, error) {
+	// Note: For buckets with >1000 items, this requires pagination (continuation tokens). 
+	// Kept simple here for the interface match.
+	result, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("s3 list failed: %w", err)
+	}
+
+	var objects []string
+	for _, item := range result.Contents {
+		objects = append(objects, *item.Key)
+	}
+	return objects, nil
+}
+
+func (s *S3Provider) GetSignedURL(ctx context.Context, bucket, object string, expires time.Duration) (string, error) {
+	req, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(object),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = expires
+	})
+	if err != nil {
+		return "", fmt.Errorf("s3 sign url failed: %w", err)
+	}
+	return req.URL, nil
+}
+
+func (s *S3Provider) Modify(ctx context.Context, bucket, object string, content io.Reader) error {
+	return s.Upload(ctx, bucket, object, content)
+}
+```
+
+4. How to Swap Them Easily (Dependency Injection)
+Because both GCSProvider and S3Provider satisfy the StorageProvider interface, your application logic shouldn't care which one it's using. You decide which one to instantiate at the very start of your program (e.g., in main.go) based on an environment variable.
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+
+	"your_project/cloudstorage"
+)
+
+// DocumentService only knows about the interface, not GCP or AWS!
+type DocumentService struct {
+	storage cloudstorage.StorageProvider
+}
+
+func main() {
+	ctx := context.Background()
+	var provider cloudstorage.StorageProvider
+	var err error
+
+	// Easily swap based on environment variable
+	cloudEnv := os.Getenv("CLOUD_PROVIDER") // e.g., "GCP" or "AWS"
+
+	if cloudEnv == "AWS" {
+		provider, err = cloudstorage.NewS3Provider(ctx, "us-east-1")
+	} else {
+		// Defaults to GCP using Application Default Credentials
+		provider, err = cloudstorage.NewGCSProvider(ctx)
+	}
+
+	if err != nil {
+		log.Fatalf("Failed to initialize storage: %v", err)
+	}
+
+	// Inject the provider into your service
+	svc := DocumentService{storage: provider}
+
+	// Now you can upload, and it routes to the correct cloud automatically
+	// file, _ := os.Open("data.csv")
+	// svc.storage.Upload(ctx, "my-bucket", "folder/data.csv", file)
+}
+```
+
+
+
+
+
+# Cloud Storage Provider for Go
+
+A cloud-agnostic Go package providing a unified interface for file operations on Google Cloud Storage (GCS) and Amazon S3. This package allows you to seamlessly swap your underlying storage infrastructure between GCP and AWS without changing your application's business logic.
+
+---
+
+## 📋 Table of Contents
+- [Requirements](#requirements)
+- [Interface Overview](#interface-overview)
+- [How to Use](#how-to-use)
+- [Credential Management (Dev vs. Prod)](#credential-management-dev-vs-prod)
+    - [Google Cloud Storage (GCS)](#google-cloud-storage-gcs)
+    - [Amazon S3](#amazon-s3)
+
+---
+
+## 📌 Requirements
+
+Ensure you have Go 1.21+ installed and the required Cloud SDKs in your `go.mod`:
+
+### For GCP:
+```bash
+go get [cloud.google.com/go/storage](https://cloud.google.com/go/storage)
+go get google.golang.org/api/iterator
+
+```
+```bash
+go get [github.com/aws/aws-sdk-go-v2/aws](https://github.com/aws/aws-sdk-go-v2/aws)
+go get [github.com/aws/aws-sdk-go-v2/config](https://github.com/aws/aws-sdk-go-v2/config)
+go get [github.com/aws/aws-sdk-go-v2/service/s3](https://github.com/aws/aws-sdk-go-v2/service/s3)
+```
+
+Both providers implement the following core StorageProvider interface:
+
+The key to this package is Dependency Injection. You instantiate the provider at the start of your application and pass it to your services.
+
+
+🔐 Credential Management (Dev vs. Prod)
+To ensure high security, never hardcode API keys or include raw JSON credential files in your Git repository. The SDKs are configured to find credentials automatically.
+
+🟢 Google Cloud Storage (GCS)
+This package uses Google's Application Default Credentials (ADC). It looks for credentials automatically without asking for file paths.
+
+💻 In Local Development (Dev):
+You do not need to generate a service account JSON file. Instead, use your own Google user permissions.
+
+Install the Google Cloud CLI (gcloud).
+
+Run the following command in your terminal:  gcloud auth application-default login
+
+A browser will open. Log in with the Google account that has access to your GCP project. The SDK will automatically locate these locally generated credentials.
+
+In Production (Prod):
+Do not use gcloud auth.
+
+Create a dedicated IAM Service Account in your GCP console and grant it the Storage Object Admin or Storage Object Viewer role.
+
+Attach this Service Account directly to your computing resource (e.g., Cloud Run, Compute Engine, or GKE via Workload Identity).
+
+The Go SDK will automatically detect the attached service account via the internal metadata server. No environment variables or files are required!
+
+
+
+The AWS SDK v2 looks for credentials in standard AWS locations.
+
+💻 In Local Development (Dev):
+Install the AWS CLI.
+
+Run aws configure and input your IAM User's Access Key and Secret Key.
+
+The SDK will automatically read these keys from your default standard location (~/.aws/credentials).
+
+☁️ In Production (Prod):
+Never use access keys or secret keys on live servers.
+
+If running on EC2, assign an IAM Role to the instance.
+
+If running on ECS, use Task Roles.
+
+If running on EKS, use IAM Roles for Service Accounts (IRSA).
+
+The Go SDK will automatically detect and assume these roles natively without passing parameters in the code.
+
+
