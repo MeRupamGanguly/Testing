@@ -63,11 +63,11 @@ func TestHandleDelete(t *testing.T) {
 	mockStorage := new(MockStorageProvider)
 	handler := storage.NewStorageHandler(mockStorage)
 	router := gin.Default()
-	router.POST("/delete", handler.HandleDelete)
+	router.DELETE("/delete", handler.HandleDelete)
 	mockStorage.On("Delete", mock.Anything, "my-bucket", "trash.txt").Return(nil)
 	reqBody := `{"bucket":"my-bucket", "filepath":"trash.txt"}`
-	req, _ := http.NewRequest("POST", "/delete", strings.NewReader(reqBody))
-	req.Header.Set("Content-Type", "application/json")
+	req, _ := http.NewRequest("DELETE", "/delete?bucket=my-bucket&filepath=trash.txt", nil)
+	
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
