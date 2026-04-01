@@ -8,8 +8,8 @@ type DownloadRequest struct {
 }
 
 type DeleteRequest struct {
-	Bucket   string `json:"bucket" binding:"required"`
-	Filepath string `json:"filepath" binding:"required"`
+	Bucket   string `form:"bucket" binding:"required"`
+	Filepath string `form:"filepath" binding:"required"`
 }
 
 type SignedURLRequest struct {
