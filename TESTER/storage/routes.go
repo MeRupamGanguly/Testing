@@ -11,7 +11,7 @@ func NewRoutes(handler *StorageHandler) *gin.Engine {
 	{
 		v1.POST("/upload", handler.HandleUpload)
 		v1.GET("/download", handler.HandleDownload)
-		v1.POST("/delete", handler.HandleDelete)
+		v1.DELETE("/delete", handler.HandleDelete)
 		v1.POST("/signed-url", handler.HandleSignedURL)
 		v1.GET("/list", handler.HandleList)
 		v1.PUT("/modify", handler.HandleUpload)
