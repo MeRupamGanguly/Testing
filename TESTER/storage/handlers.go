@@ -71,9 +71,9 @@ func (h *StorageHandler) HandleDownload(c *gin.Context) {
 }
 
 func (h *StorageHandler) HandleDelete(c *gin.Context) {
-	log.Println("Delete Handler Called")
+	// STRICT REST: We use ShouldBindQuery instead of ShouldBindJSON
 	var req models.DeleteRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Success: false, Error: err.Error()})
 		return
 	}
