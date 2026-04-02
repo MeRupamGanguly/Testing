@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS batch_tasks (
+    id UUID PRIMARY KEY,
+    payload JSONB NOT NULL,
+    status VARCHAR(20) DEFAULT 'PENDING', -- PENDING, PROCESSING, COMPLETED, FAILED, DEAD_LETTER
+    attempts INT DEFAULT 0,
+    max_attempts INT DEFAULT 5,
+    next_run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_error TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_task_retry ON batch_tasks (status, next_run_at)
+WHERE status IN ('PENDING', 'FAILED');
