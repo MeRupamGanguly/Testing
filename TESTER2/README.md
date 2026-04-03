@@ -1,3 +1,56 @@
+# Go Concurrent Batch Scheduler
+
+A high-performance, fault-tolerant Go application engineered to handle batch processing using a localized worker pool pattern and a PostgreSQL relational database. This system aggressively minimizes deadlocks and optimizes concurrency using native database row locking.
+
+## 📖 What This Package Does
+
+This package is a continuous cron-driven batch processor. It queries a PostgreSQL table for "Pending" or "Failed" tasks, securely claims them, and offloads them dynamically to a fixed-size worker pool running in concurrent Go routines. 
+
+Instead of overwhelming your server by spawning a goroutine for every single payload, it caps resource usage at a defined rate while maximizing the efficiency of your active database connections.
+
+---
+
+## 🚀 How to Run and Test This Package
+
+Since this application is tailored to run in an isolated, daemonless environment on Fedora, we use **Podman** to orchestrate both the Go execution and the database server safely.
+
+### Automatic Test Suite
+We have constructed a full automated testing script (`scr.sh`) that spins up the whole stack, seeds fake tasks, and validates completion.
+
+1. **Ensure the setup script is executable:**
+   ```bash
+   chmod +x scr.sh
+
+
+🛠️ Features and Functions
+Smart Worker Pool: Restricts task processing to an explicitly defined boundary of workers to protect your system from exhausting memory or exhausting active DB connections.
+
+Database Driven Concurrency Management: Uses the advanced Postgres operation FOR UPDATE SKIP LOCKED. This guarantees multiple separate instances of this app can run side-by-side against the same DB table without processing duplicate tasks or causing table deadlocks.
+
+Cron Scheduled Triggers: Utilizes the lightweight robfig/cron/v3 library to effortlessly maintain rigid execution boundaries without external OS timers.
+
+Exponential Random Backoff: Failed tasks are intelligently calculated and pushed back in time with a safe randomized margin so API limits aren't crushed during simultaneous retries.
+
+Manual Dead Letter Resurrection: Tasks exceeding max attempts naturally fall into a DEAD_LETTER safety state. The application exposes a programmatic pathway to resurrect them back to active PENDING states after system administrators analyze the failure payloads.
+
+📦 Dependencies Required
+This package targets modern Linux ecosystems like Fedora and utilizes minimal external modules to maximize static binary compilation security.
+
+System OS Dependencies
+Podman (Daemonless containerization engine natively shipped with Fedora)
+
+Bash (To execute automation shells)
+
+Go Dependencies
+Go 1.26 or higher (Required as specified by the strict toolchain bounds in the go.mod directive)
+
+github.com/lib/pq (Pure Go Postgres driver)
+
+github.com/robfig/cron/v3 (Thread-safe execution scheduler)
+
+Database Dependency
+PostgreSQL 12+ (Or a Docker/Podman library running postgres:latest with the pgcrypto extension activated for safe UUID generation)
+
 
 
 Wave-Based Scheduling: Uses Cron expressions to trigger processing "waves" at specific intervals.
