@@ -100,3 +100,137 @@ Worker Pool Pattern: We need this to limit the number of concurrent tasks, preve
 Cron Scheduler: This provides the automated "heartbeat" needed to check the database for pending work at specific intervals.
 
 Graceful Shutdown: This is required to make sure that if the server restarts, we finish processing the current tasks instead of cutting them off mid-execution, which would leave them stuck in an inconsistent state
+
+
+```go
+package shared
+
+import (
+	"time"
+	"github.com/oklog/ulid/v2"
+)
+
+// NewID generates a sortable ULID
+func NewID() string {
+	return ulid.Make().String()
+}
+
+// NowUTC returns the current time in UTC, ensuring consistency across servers
+func NowUTC() time.Time {
+	return time.Now().UTC()
+}
+
+// ToUserTime handles explicit TZ conversion for the UI layer
+func ToUserTime(t time.Time, zone string) (time.Time, error) {
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.In(loc), nil
+}
+```
+
+```go
+package shared
+
+import (
+	"fmt"
+	"github.com/shopspring/decimal"
+)
+
+// Money represents a value and its currency
+type Money struct {
+	Amount   decimal.Decimal
+	Currency string
+}
+
+func NewMoney(amount float64, currency string) Money {
+	return Money{
+		Amount:   decimal.NewFromFloat(amount),
+		Currency: currency,
+	}
+}
+
+// Add performs safe addition and ensures currency parity
+func (m Money) Add(other Money) (Money, error) {
+	if m.Currency != other.Currency {
+		return Money{}, fmt.Errorf("currency mismatch: %s vs %s", m.Currency, other.Currency)
+	}
+	return Money{
+		Amount:   m.Amount.Add(other.Amount),
+		Currency: m.Currency,
+	}, nil
+}
+```
+
+```go
+package ordering
+
+import (
+	"errors"
+	"yourproject/internal/domain/shared"
+)
+
+var (
+	ErrInvalidOrderTotal = errors.New("order total must be greater than zero")
+	ErrNoItems           = errors.New("order must contain at least one item")
+)
+
+// Order represents an Aggregate Root
+type Order struct {
+	ID        string
+	CustomerID string
+	Total     shared.Money
+	CreatedAt shared.Time
+	Status    string
+	// Private fields ensure invariants are only changed via methods
+	items     []OrderItem 
+}
+
+// NewOrder is the "Factory/Constructor" that enforces validation (Invariants)
+func NewOrder(customerID string, items []OrderItem) (*Order, error) {
+	if len(items) == 0 {
+		return nil, ErrNoItems
+	}
+
+	// Calculate total and validate logic
+	var total shared.Money
+	for i, item := range items {
+		if i == 0 {
+			total = item.Price
+			continue
+		}
+		var err error
+		total, err = total.Add(item.Price)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if total.Amount.LessThanOrEqual(decimal.Zero) {
+		return nil, ErrInvalidOrderTotal
+	}
+
+	return &Order{
+		ID:         shared.NewID(),
+		CustomerID: customerID,
+		Total:      total,
+		CreatedAt:  shared.NowUTC(),
+		Status:     "PENDING",
+		items:      items,
+	}, nil
+}
+```
+```go
+func (s *OrderService) CreateOrder(req CreateOrderRequest) error {
+    // 1. Map DTO to Domain Entities (OrderItems)
+    // 2. Call Domain Constructor (which triggers validation)
+    order, err := ordering.NewOrder(req.CustomerID, req.Items)
+    if err != nil {
+        return err // Return domain validation error to caller
+    }
+    
+    // 3. Persist to Repository
+    return s.repo.Save(order)
+}
+```
