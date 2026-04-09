@@ -1,0 +1,9 @@
+launchdarkly:
+  sdk-key: "offline-test-key"
+  offline-mode: true
+
+redis:
+  enabled: true
+  url: "redis://localhost:6379"
+  prefix: "ld-app-data"
+  local-ttl-seconds: 60
