@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# Configuration
+IMAGE_NAME="killswitch-app"
+CONTAINER_NAME="killswitch-test-instance"
+PORT=8080
+BASE_URL="http://localhost:$PORT"
+
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}=== Starting Podman Test Suite ===${NC}"
+
+# 1. Cleanup existing containers
+if [ "$(podman ps -aq -f name=$CONTAINER_NAME)" ]; then
+    echo "Cleaning up old container..."
+    podman rm -f $CONTAINER_NAME > /dev/null
+fi
+
+# 2. Build Image
+echo -e "${BLUE}Building Podman image...${NC}"
+podman build -t $IMAGE_NAME .
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Build failed!${NC}"
+    exit 1
+fi
+
+# 3. Run Container
+echo -e "${BLUE}Starting container...${NC}"
+podman run -d --name $CONTAINER_NAME -p $PORT:8080 $IMAGE_NAME
+echo -e "${BLUE}Verifying flags.json inside container:${NC}"
+podman exec $CONTAINER_NAME cat flags.json
+sleep 3 # Wait for Gin to initialize
+
+# 4. Define Test Function
+run_test() {
+    local DESC=$1
+    local ENDPOINT=$2
+    echo -e "\n${BLUE}TEST: $DESC${NC}"
+    echo "URL: $ENDPOINT"
+
+    RESPONSE=$(curl -s -w "\n%{http_code}" "$ENDPOINT")
+    HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+
+    if [ "$HTTP_STATUS" -eq 200 ]; then
+        echo -e "${GREEN}PASS (Status $HTTP_STATUS)${NC}"
+        echo "Response: $BODY"
+    else
+        echo -e "${RED}FAIL (Status $HTTP_STATUS)${NC}"
+        echo "Response: $BODY"
+    fi
+}
+
+# 5. Execute Feature Tests
+# Test 1: Boolean Attribute Test (Passing Context)
+run_test "Feature Flag with Attributes" \
+    "$BASE_URL/locations/LOC123/booleanattributestest?sourceSystem=mobile&sourceChannel=retail&store=NYC01"
+
+# Test 2: Standard Boolean Test
+run_test "Standard Feature Flag" \
+    "$BASE_URL/locations/LOC456/booleantest"
+
+# Test 3: Internal Mock API
+run_test "Internal Mock API Reachability" \
+    "$BASE_URL/api/mock/locations/LOC789"
+
+echo -e "${BLUE}TEST: Cache Hit Verification (Repeat Request)${NC}"
+# First call - creates the cache entry
+curl -s "$BASE_URL/locations/LOC123/booleantest" > /dev/null
+# Second call - should hit the cache
+run_test "Verify Cache Hit for LOC123" "$BASE_URL/locations/LOC123/booleantest"
+
+# Check logs specifically for the absence of "Fetching from LaunchDarkly" on the second call
+echo -e "\n${BLUE}Verifying Cache Logic in Logs:${NC}"
+podman logs $CONTAINER_NAME | grep "LOC123"
+
+
+# 6. Check Container Logs (Verbose Check)
+echo -e "\n${BLUE}=== Container Internal Logs (Verification of Logic Flow) ===${NC}"
+podman logs $CONTAINER_NAME | grep "CORE KILLSWITCH"
+
+# 7. Cleanup
+echo -e "\n${BLUE}=== Tests Complete. Cleaning up... ===${NC}"
+podman stop $CONTAINER_NAME > /dev/null
+podman rm $CONTAINER_NAME > /dev/null
+echo -e "${GREEN}Done.${NC}"

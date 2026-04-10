@@ -1,0 +1,10 @@
+{
+  "flags": {
+    "location-feature-flag": {
+      "key": "location-feature-flag",
+      "on": false,
+      "fallthrough": { "variation": 0 },
+      "variations": [false, true]
+    }
+  }
+}
