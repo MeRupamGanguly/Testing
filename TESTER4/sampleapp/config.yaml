@@ -1,0 +1,25 @@
+webclient:
+  baseUrl: "http://localhost:8080"
+  connectTimeoutMs: 5000
+  readTimeoutMs: 5000
+  retry:
+    enabled: true
+    maxAttempts: 3
+    backoff:
+      delayMs: 1000
+      maxDelayMs: 5000
+      multiplier: 2.0
+  circuitBreaker:
+    enabled: true
+    failureRateThreshold: 50
+    minimumNumberOfCalls: 10
+    waitDurationInOpenStateMs: 30000
+  services:
+    locationService:
+      path: "/api/mock/locations/%s" # Example path, %s for uri variables
+      # Overrides can be placed here just like in Spring
+
+ldkillswitch:
+  sdkKey: "your-sdk-key"
+  offline: true
+  ttlSeconds: 300
