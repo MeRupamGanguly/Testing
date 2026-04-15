@@ -13,13 +13,257 @@ go test -v ./SampleApp/service
 
 
 
+"location-feature-flag": {
+  "on": true,
+  "targets": [{ "values": ["LOC123"], "variation": 0 }],
+  "fallthrough": { "variation": 1 },
+  "variations": [false, true]
+}
+
+
+Variation 0 = false (kill‑switch ON)
+
+Variation 1 = true (kill‑switch OFF)
+
+Result: For context key "LOC123" → false; for any other key → true.
 
 
 
 
+# SampleApp – Feature Flag & Kill‑Switch Integration Demo
 
+This `SampleApp` is a production‑grade demonstration of how to integrate the `LDKillSwitch` library (a cached wrapper around the LaunchDarkly Go SDK) into a Go‑based microservice. It simulates a location service that uses a LaunchDarkly feature flag as a **kill‑switch** to dynamically block or allow requests to a downstream API. The app also showcases a resilient HTTP client with automatic retries and a circuit breaker.
 
+---
 
+## 📁 Project Structure (SampleApp only)
+
+```
+SampleApp/
+├── cmd/
+│   └── main.go                 # Application entry point
+├── config/
+│   ├── configapp.go            # YAML configuration loader
+│   └── config.yaml             # Configuration file
+├── controller/
+│   └── controller.go           # HTTP handlers (Gin routes)
+├── service/
+│   ├── serviceapp.go           # Business logic with kill‑switch integration
+│   └── serviceapp_test.go      # Unit tests for service layer
+├── client/
+│   ├── client.go               # HTTP client with retry & circuit breaker
+│   └── client_test.go          # Unit tests for HTTP client
+└── (other files like flags.json, go.mod are in the root)
+```
+
+The `LDKillSwitch` library resides outside `SampleApp` (sibling directory) and is imported as `featuresgflags/LDKillSwitch`.
+
+---
+
+## 🧠 What Each File Does (Logic & Responsibility)
+
+### 1. `cmd/main.go` – Entry Point
+
+**Purpose**: Bootstrap the application – load config, initialise the LaunchDarkly kill‑switch library, create HTTP clients, set up the Gin router, and start the server.
+
+**Logic**:
+- Load `config.yaml` using `config.LoadConfig()`.
+- Extract LaunchDarkly properties, Redis config, and cache TTL.
+- Call `ldConfig.NewLDClient()` to create the LaunchDarkly client (offline or online, optionally with Redis).
+- Create a feature flag cache (`ldCache.NewFeatureFlagCache`) and a feature flag service (`ldService.NewFeatureFlagService`).
+- Build a map of `WebClient`s using `client.NewWebClientManager()` (one per configured service).
+- Instantiate the `service.WebClientService` (injects the feature flag service and clients).
+- Instantiate the `controller.LocationController` and register its routes.
+- Start the Gin server on port `8080`.
+
+**Key dependencies injected**: configuration, LaunchDarkly client, cache, HTTP clients.
+
+---
+
+### 2. `config/configapp.go` – Configuration Loader
+
+**Purpose**: Define the structure of `config.yaml` and load it into Go structs.
+
+**Logic**:
+- `AppConfig` contains `WebClientProperties`.
+- `WebClientProperties` includes fields for base URL, timeouts, retry, circuit breaker, service‑specific overrides, LaunchDarkly settings, and Redis settings.
+- `LoadConfig(filename string)` reads the YAML file and unmarshals it.
+
+**Why**: Centralises configuration and provides strong typing.
+
+---
+
+### 3. `config.yaml` – Runtime Configuration
+
+**Purpose**: Externalise all settings so the app can be reconfigured without recompilation.
+
+**Key sections**:
+- `webclient.baseUrl`: default URL for downstream calls.
+- `webclient.services.locationService.path`: path template for the mocked location API.
+- `webclient.ldkillswitch`: SDK key, offline mode, cache TTL, size.
+- `webclient.redis`: Redis connection details (used only if offline mode is off).
+
+**Note**: The provided sample sets `offline: true`, so the LaunchDarkly client reads `flags.json` instead of contacting LaunchDarkly servers.
+
+---
+
+### 4. `controller/controller.go` – HTTP Handlers
+
+**Purpose**: Expose two REST endpoints that trigger the kill‑switch logic.
+
+**Endpoints**:
+
+| Endpoint | Method | Handler | Logic |
+|----------|--------|---------|-------|
+| `/locations/:locationId/booleantest` | GET | `GetLocationBooleanTest` | Builds an `ldcontext` using only the `locationId`. Calls `webClientService.Get()` with flag key `"location-feature-flag"`. Returns the result or an error. |
+| `/locations/:locationId/booleanattributestest` | GET | `GetLocation` | Builds an `ldcontext` with extra attributes: `sourceSystem`, `sourceChannel`, `store` from query parameters. Then calls the same service method. |
+| `/api/mock/locations/:locationId` | GET | `MockTargetAPI` | Internal mock endpoint that returns a static JSON response. This is the **downstream service** that the kill‑switch protects. |
+
+**Why two endpoints?**  
+- The simple one shows kill‑switch based **only** on location ID.  
+- The attribute‑based one demonstrates how you can use additional context (source system, channel, store) to drive the flag evaluation – enabling more granular rollouts or blocking.
+
+---
+
+### 5. `service/serviceapp.go` – Business Logic with Kill‑Switch
+
+**Purpose**: Orchestrate the kill‑switch check and the downstream HTTP call.
+
+**Struct**: `WebClientService` holds the configuration, a map of `WebClient`s (per service name), and the `featureFlagService` from the `LDKillSwitch` library.
+
+**Method**: `Get(serviceName string, ldCtx ldcontext.Context, flagKey string, uriVars ...interface{}) (string, error)`
+
+**Logic**:
+1. **Check context**: If `ldCtx.IsDefined()` is true (it always is in our endpoints), call `featureFlagService.IsFeatureEnabled(flagKey, ldCtx, false)`.
+2. **If flag is false** → return an error `"feature_disabled_by_killswitch"`. The controller will return HTTP 400.
+3. **If flag is true** → proceed:
+   - Look up the service configuration (path template) from `props.Services[serviceName]`.
+   - Format the path using the `uriVars` (e.g., `/api/mock/locations/123`).
+   - Retrieve the pre‑configured `WebClient` for that service name.
+   - Call `webClient.DoGet(path)` (this triggers retries + circuit breaker).
+   - Return the response body as a string (or an error if the downstream call fails).
+
+**Why this design?**  
+- Decouples the kill‑switch logic from the HTTP client details.
+- The same `Get` method can be reused for any downstream service by passing different `serviceName` and `flagKey`.
+
+---
+
+### 6. `client/client.go` – Resilient HTTP Client
+
+**Purpose**: Provide an HTTP client that automatically retries failed requests and uses a circuit breaker to prevent cascading failures.
+
+**Struct**: `WebClient` contains an `*http.Client`, a `*gobreaker.CircuitBreaker`, retry configuration, and a base URL.
+
+**Function**: `NewWebClientManager(props)` iterates over the services defined in config and creates a `WebClient` for each, applying service‑specific overrides.
+
+**Method**: `DoGet(path string) ([]byte, error)`
+
+**Logic**:
+- Define a `reqFunc` that performs the actual HTTP GET request.
+- Wrap `reqFunc` with **retry logic**:
+  - If retries are enabled, loop up to `maxAttempts`, with exponential backoff delays.
+  - After each failure, sleep and increase delay (capped at `maxDelayMs`).
+- Wrap the retriable function with **circuit breaker** (if enabled):
+  - The circuit breaker tracks failures; when the failure rate exceeds the threshold, it “opens” and rejects calls immediately for a configured duration.
+- Execute the chain and return the response body.
+
+**Why important**:  
+- Simulates a realistic microservice environment where downstream services can be unreliable.  
+- The kill‑switch can prevent calls from even reaching this client when the feature flag is off, but when the flag is on, the client ensures robustness.
+
+---
+
+### 7. `client/client_test.go` & `service/serviceapp_test.go`
+
+**Purpose**: Unit tests for the HTTP client and the service layer.
+
+**Logic**:
+- `client_test.go` uses `httptest.NewServer` to mock an HTTP endpoint and verifies that retries and circuit breakers work as expected.
+- `serviceapp_test.go` uses `ldtestdata` to mock LaunchDarkly flag evaluations and verifies that:
+  - When the flag is `true`, the downstream call is made and the response is returned.
+  - When the flag is `false`, an error (`feature_disabled_by_killswitch`) is returned without calling the downstream client.
+  - Unknown services produce proper error messages.
+
+**Why**: Ensure correctness and prevent regressions.
+
+---
+
+## 🔄 Complete Request Flow (Example: `GET /locations/LOC123/booleantest`)
+
+1. **Controller** extracts `locationId = "LOC123"`, builds `ldcontext` with key `"LOC123"`.
+2. Calls `webClientService.Get("locationService", ctx, "location-feature-flag", "LOC123")`.
+3. **Service** checks the feature flag via `featureFlagService.IsFeatureEnabled(...)`.
+4. **LDKillSwitch library**:
+   - Checks cache for key `"location-feature-flag:LOC123"`.
+   - On cache miss, calls `ldClient.BoolVariation(...)`.
+   - Because `offline: true` in `config.yaml`, the LaunchDarkly SDK evaluates the flag using `flags.json`.
+   - `flags.json` defines that `"LOC123"` targets variation `0` = `false`.
+5. **Service** receives `false` → returns `errors.New("feature_disabled_by_killswitch")`.
+6. **Controller** returns HTTP 400 `{"error":"feature_disabled_by_killswitch"}`.
+
+**If the flag were `true`** (e.g., `locationId = "LOC456"`):
+- Service proceeds, gets path `/api/mock/locations/LOC456`, calls `webClient.DoGet(...)`.
+- The mock endpoint returns `{"message":"Successfully reached target API", "location_id":"LOC456", "status":"active"}`.
+- Controller returns HTTP 200 with that JSON.
+
+---
+
+## ⚙️ Configuration Highlights
+
+| Parameter | Value | Effect |
+|-----------|-------|--------|
+| `webclient.ldkillswitch.offline` | `true` | LaunchDarkly client reads `flags.json` instead of contacting LaunchDarkly servers. |
+| `webclient.ldkillswitch.cacheEnabled` | `true` | Enables in‑memory caching of flag evaluations (TTL = 2 minutes). |
+| `webclient.retry.enabled` | `true` | HTTP client retries failed requests up to 3 times with exponential backoff. |
+| `webclient.circuitBreaker.enabled` | `true` | Circuit breaker opens after 50% failure rate (minimum 10 calls). |
+| `webclient.services.locationService.path` | `"/api/mock/locations/%s"` | Path template for the mocked downstream API. |
+
+---
+
+## 🧪 Running the Sample App
+
+### Prerequisites
+- Go 1.18+
+- No external dependencies needed (offline mode uses local `flags.json`).
+
+### Steps
+1. Ensure `flags.json` exists in the project root (provided).
+2. Run the application:
+   ```bash
+   go run ./SampleApp/cmd/main.go
+   ```
+3. Test the endpoints:
+   ```bash
+   # Kill‑switch active (LOC123)
+   curl "http://localhost:8080/locations/LOC123/booleantest"
+   # Expected: 400 Bad Request with error
+
+   # Kill‑switch inactive (LOC456)
+   curl "http://localhost:8080/locations/LOC456/booleantest"
+   # Expected: 200 OK with mock data
+
+   # Attribute‑based test (still uses same flag, but context carries extra fields)
+   curl "http://localhost:8080/locations/LOC123/booleanattributestest?sourceSystem=web&store=NYC"
+   ```
+
+### Running Tests
+```bash
+# From project root
+go test -v ./SampleApp/...
+```
+
+---
+
+## 📚 Key Takeaways
+
+- **Kill‑switch pattern**: Use a feature flag to block calls to a downstream service without changing code.
+- **Caching**: Reduce latency and LaunchDarkly API calls by caching flag evaluations per `(flagKey, contextKey)`.
+- **Offline mode**: Develop and test without an internet connection using `flags.json`.
+- **Resilience**: Retries and circuit breakers protect against downstream failures.
+- **Clean architecture**: Separation of concerns (controller → service → client) makes the code maintainable and testable.
+
+For a deep dive into the `LDKillSwitch` library itself, see `LDKillSwitch/README.md`.
 
 Go App Kill Switch Flow Explanation
 Orderflow Algo Trading App Development
