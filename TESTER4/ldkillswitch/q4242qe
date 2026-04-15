@@ -1,3 +1,62 @@
+In the Go code, the `WebClient` implements two resilience patterns to protect downstream calls: **retries with exponential backoff** (up to 3 attempts, starting at 1 second and doubling each time, max 5 seconds) and a **circuit breaker** (trips when 50% of at least 10 requests fail, then stays open for 30 seconds). These mechanisms are fully configured and ready to handle real network failures or HTTP errors (status ≥400). However, in the provided sample app, the only downstream call is to a mock internal API that always returns HTTP 200, so the retries and circuit breaker are **never triggered**. They serve as a demonstration of how you would add resilience when calling an unreliable external service in a production environment.
+
+
+In the Go code, the `WebClient` implements two resilience patterns to protect downstream calls: **retries with exponential backoff** (up to 3 attempts, starting at 1 second and doubling each time, max 5 seconds) and a **circuit breaker** (trips when 50% of at least 10 requests fail, then stays open for 30 seconds). These mechanisms are fully configured and ready to handle real network failures or HTTP errors (status ≥400). However, in the provided sample app, the only downstream call is to a mock internal API that always returns HTTP 200, so the retries and circuit breaker are **never triggered**. They serve as a demonstration of how you would add resilience when calling an unreliable external service in a production environment.
+
+Here’s a clear explanation of each **resilience terminology** used in the Go code’s `WebClient`:
+
+---
+
+### 1. Retries
+**Definition**: Automatically repeating a failed request multiple times before giving up.  
+**Why used**: Temporary failures (network glitch, server overload) often resolve on their own – retrying can succeed without user intervention.  
+**In the Go code**: Up to 3 attempts. Only triggers on errors (connection issues or HTTP status ≥400).
+
+### 2. Exponential Backoff
+**Definition**: Increasing the waiting time between retries exponentially (e.g., 1s, then 2s, then 4s).  
+**Why used**: Prevents overwhelming an already struggling server with rapid retries. Gives the service time to recover.  
+**In the Go code**: Initial delay = 1000ms, multiplier = 2.0, max delay = 5000ms. So delays: 1s → 2s → 4s (capped at 5s).
+
+### 3. Circuit Breaker
+**Definition**: A pattern that stops calling a failing service for a certain period, allowing it to recover. Has three states: **Closed**, **Open**, **Half-Open**.  
+**Why used**: Prevents cascading failures – if a downstream service is down, the circuit breaker blocks calls immediately (failing fast) instead of waiting for a timeout.
+
+### 4. Failure Rate Threshold
+**Definition**: The percentage of failed requests that triggers the circuit breaker to open.  
+**In the Go code**: 50% – if more than half of recent requests fail, the breaker opens.
+
+### 5. Minimum Number of Calls
+**Definition**: The minimum number of requests that must be observed before the circuit breaker can evaluate the failure rate.  
+**Why used**: Avoids opening the breaker after just 1 or 2 failures due to random noise.  
+**In the Go code**: 10 calls required before the breaker can trip.
+
+### 6. Open State
+**Definition**: The circuit breaker is “open” – all requests fail immediately without calling the downstream service.  
+**Why used**: Gives the failing service time to recover without being hammered by requests.  
+**In the Go code**: Stays open for 30 seconds (waitDurationInOpenStateMs).
+
+### 7. Half-Open State
+**Definition**: After the open duration, the breaker allows a limited number of test requests to see if the service has recovered.  
+- If a test request succeeds → breaker closes (normal operation).  
+- If it fails → breaker opens again.  
+**Why used**: Avoids guessing when the service is back; it’s verified with real traffic.
+
+### 8. Transport Error
+**Definition**: Low‑level network failures – e.g., connection refused, DNS lookup failure, TLS handshake error, timeout.  
+**In the Go code**: Retries are triggered on these, because they usually indicate transient problems.
+
+### 9. HTTP Status ≥400
+**Definition**: Client errors (4xx) and server errors (5xx).  
+**In the Go code**: Any response with status 400 or higher triggers a retry (e.g., 404 Not Found, 500 Internal Server Error).  
+*Note*: In real systems, you might only retry 5xx, but this code retries all non‑2xx.
+
+### 10. Mock API
+**Definition**: A fake endpoint that returns a fixed, predictable response. Used for testing or demonstration.  
+**In the Go code**: `/api/mock/locations/:locationId` always returns HTTP 200 with JSON. Because it never fails, retries and circuit breaker never activate – they are just examples.
+
+---
+
+In short: The Go code includes production‑ready retry and circuit breaker logic, but the demo’s mock API never triggers them. They show **how** you would protect real, unreliable downstream services.
 
 # LDKillSwitch cache tests
 go test -v ./LDKillSwitch/cache
