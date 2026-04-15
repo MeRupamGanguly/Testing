@@ -1,4 +1,26 @@
 
+# LDKillSwitch cache tests
+go test -v ./LDKillSwitch/cache
+
+# LDKillSwitch service tests
+go test -v ./LDKillSwitch/service
+
+# SampleApp client tests
+go test -v ./SampleApp/client
+
+# SampleApp service tests
+go test -v ./SampleApp/service
+
+
+
+
+
+
+
+
+
+
+
 Go App Kill Switch Flow Explanation
 Orderflow Algo Trading App Development
 Android Compose project configuration analysis
