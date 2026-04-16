@@ -1,0 +1,179 @@
+This implementation follows modern Go best practices for a production-level e-commerce domain, specifically addressing the requirements in your "Domain Concerns" checklist.
+
+### Project Structure
+For domain-driven design (DDD), we keep logic clean and separated from infrastructure.
+
+```text
+internal/domain/
+├── shared/
+│   ├── money.go       // Monetary calculations
+│   ├── time.go        // Time handling
+│   └── identity.go    // ULID/KSUID generation
+└── ordering/
+    ├── order.go       // Aggregate, Invariants, Validation
+    └── repository.go  // Interface definition
+```
+
+---
+
+### 1. Monetary Calculations & Currency
+We use `shopspring/decimal` to avoid floating-point errors (like $0.1 + 0.2 \neq 0.3$).
+
+```go
+package shared
+
+import (
+	"fmt"
+	"github.com/shopspring/decimal"
+)
+
+// Money represents a value and its currency
+type Money struct {
+	Amount   decimal.Decimal
+	Currency string
+}
+
+func NewMoney(amount float64, currency string) Money {
+	return Money{
+		Amount:   decimal.NewFromFloat(amount),
+		Currency: currency,
+	}
+}
+
+// Add performs safe addition and ensures currency parity
+func (m Money) Add(other Money) (Money, error) {
+	if m.Currency != other.Currency {
+		return Money{}, fmt.Errorf("currency mismatch: %s vs %s", m.Currency, other.Currency)
+	}
+	return Money{
+		Amount:   m.Amount.Add(other.Amount),
+		Currency: m.Currency,
+	}, nil
+}
+```
+
+---
+
+### 2. Time & Identity Handling
+We ensure all timestamps are stored in **UTC** and use **ULIDs** for IDs. ULIDs are lexicographically sortable, making them better for database indexing than UUIDs.
+
+```go
+package shared
+
+import (
+	"time"
+	"github.com/oklog/ulid/v2"
+)
+
+// NewID generates a sortable ULID
+func NewID() string {
+	return ulid.Make().String()
+}
+
+// NowUTC returns the current time in UTC, ensuring consistency across servers
+func NowUTC() time.Time {
+	return time.Now().UTC()
+}
+
+// ToUserTime handles explicit TZ conversion for the UI layer
+func ToUserTime(t time.Time, zone string) (time.Time, error) {
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.In(loc), nil
+}
+```
+
+---
+
+### 3. Domain Validation & Invariants
+This is where we implement **Constructor Validation**. An object cannot exist in an invalid state.
+
+```go
+package ordering
+
+import (
+	"errors"
+	"yourproject/internal/domain/shared"
+)
+
+var (
+	ErrInvalidOrderTotal = errors.New("order total must be greater than zero")
+	ErrNoItems           = errors.New("order must contain at least one item")
+)
+
+// Order represents an Aggregate Root
+type Order struct {
+	ID        string
+	CustomerID string
+	Total     shared.Money
+	CreatedAt shared.Time
+	Status    string
+	// Private fields ensure invariants are only changed via methods
+	items     []OrderItem 
+}
+
+// NewOrder is the "Factory/Constructor" that enforces validation (Invariants)
+func NewOrder(customerID string, items []OrderItem) (*Order, error) {
+	if len(items) == 0 {
+		return nil, ErrNoItems
+	}
+
+	// Calculate total and validate logic
+	var total shared.Money
+	for i, item := range items {
+		if i == 0 {
+			total = item.Price
+			continue
+		}
+		var err error
+		total, err = total.Add(item.Price)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if total.Amount.LessThanOrEqual(decimal.Zero) {
+		return nil, ErrInvalidOrderTotal
+	}
+
+	return &Order{
+		ID:         shared.NewID(),
+		CustomerID: customerID,
+		Total:      total,
+		CreatedAt:  shared.NowUTC(),
+		Status:     "PENDING",
+		items:      items,
+	}, nil
+}
+```
+
+---
+
+### Summary of Implementation vs. Guidelines
+
+| Concern | Implementation Strategy | Why? |
+| :--- | :--- | :--- |
+| **Monetary** | `shopspring/decimal` | Prevents precision loss in financial transactions. |
+| **Time** | `time.Now().UTC()` | Consistency across distributed systems; avoids "server local" time bugs. |
+| **Validation** | Constructor Validation | Guarantees "Always Valid" domain objects (no empty IDs or negative prices). |
+| **IDs** | `ULID` | UUID-like uniqueness but sortable by time, optimizing DB performance. |
+| **Boundaries** | Aggregate Roots | Encapsulates logic (like adding items to an order) within the domain layer. |
+
+### How to use this in a Service
+```go
+func (s *OrderService) CreateOrder(req CreateOrderRequest) error {
+    // 1. Map DTO to Domain Entities (OrderItems)
+    // 2. Call Domain Constructor (which triggers validation)
+    order, err := ordering.NewOrder(req.CustomerID, req.Items)
+    if err != nil {
+        return err // Return domain validation error to caller
+    }
+    
+    // 3. Persist to Repository
+    return s.repo.Save(order)
+}
+```
+
+This approach ensures that your business rules are decoupled from your database or API framework, making the code highly testable and resilient to change.
