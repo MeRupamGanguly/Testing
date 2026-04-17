@@ -1,0 +1,27 @@
+{
+  "flags": {
+    "location-feature-flag": {
+      "key": "location-feature-flag",
+      "on": true,
+      "targets": [
+        {
+          "values": ["LOC123"],
+          "variation": 0
+        }
+      ],
+      "fallthrough": { "variation": 1 },
+      "variations": [false, true]
+    },
+    "log-levels": {
+      "key": "log-levels",
+      "on": true,
+      "variations": [
+        ["DEBUG", "INFO", "WARN", "ERROR"],
+        ["INFO", "WARN", "ERROR"],
+        ["WARN", "ERROR"],
+        ["ERROR"]
+      ],
+      "fallthrough": { "variation": 3 }
+    }
+  }
+}
