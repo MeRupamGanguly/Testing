@@ -1,0 +1,31 @@
+webclient:
+  baseUrl: "http://localhost:8080"
+  connectTimeoutMs: 5000
+  readTimeoutMs: 5000
+  flagsPath: "../../flags.json"
+  retry:
+    enabled: true
+    maxAttempts: 3
+    backoff:
+      delayMs: 1000
+      maxDelayMs: 5000
+      multiplier: 2.0
+  circuitBreaker:
+    enabled: true
+    failureRateThreshold: 50
+    minimumNumberOfCalls: 10
+    waitDurationInOpenStateMs: 30000
+    halfOpenMaxRequests: 3
+  services:
+    locationService:
+      path: "/api/mock/locations/%s"
+  ldkillswitch:
+    sdkKey: "your-sdk-key"
+    offline: true
+    cacheEnabled: true
+    expireAfterWriteMinute: 1
+
+  redis:
+    enabled: false
+    url: "redis://localhost:6379"
+    local-ttl-seconds: 5
