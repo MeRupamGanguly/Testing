@@ -237,7 +237,112 @@ Main dependencies (managed by Go modules):
 - `github.com/launchdarkly/go-server-sdk-redis-go-redis` (optional)
 
 ---
+The code you've provided isn't just a simple "Hello World" app; it is a sophisticated boilerplate designed to demonstrate **Feature Management** and **Dynamic Configuration** using LaunchDarkly.
 
+The reason there are multiple APIs and layers is to show how you can control application behavior (like blocking a request or changing log levels) in real-time without redeploying your code.
+
+-----
+
+### 1\. The HTTP API Endpoints (`controller.go`)
+
+These are the entry points for external users.
+
+| API Endpoint | What it does | What it needs |
+| :--- | :--- | :--- |
+| `GET /locations/:locationId/booleanattributestest` | **The "Rich Context" Test.** It checks if a feature is enabled based on specific user attributes (where they are coming from, what store they are in). | **Path:** `locationId`<br>**Query Params:** `sourceSystem`, `sourceChannel`, `store`. |
+| `GET /locations/:locationId/booleantest` | **The "Simple" Test.** It checks the same feature flag but uses a bare-minimum context (just the ID). Useful for testing default behaviors. | **Path:** `locationId`. |
+| `GET /api/mock/locations/:locationId` | **The Mock Target.** This isn't a real business API; it acts as the "Destination" for the `WebClientService` to call so you can see the full flow locally. | **Path:** `locationId`. |
+
+-----
+
+### 2\. The Logic Layer (`serviceapp.go`)
+
+This is the **"Kill Switch"** layer. This isn't an API exposed to the web, but an internal service API used by the controller.
+
+  * **What it does:** Before it makes a network call to fetch data, it asks LaunchDarkly: *"Is the feature 'location-feature-flag' enabled for this specific user/context?"*
+  * **Why it's required:** It demonstrates a **Circuit Breaker** or **Kill Switch** pattern. If a downstream service is failing, you can flip a switch in LaunchDarkly, and this code will block the request immediately at line 40, saving resources and preventing errors.
+
+-----
+
+### 3\. The Dynamic Logging API (`log_manager.go`)
+
+This represents a **Configuration API**. It doesn't have a URL; instead, it "polls" LaunchDarkly in the background.
+
+  * **What it does:** It watches a JSON flag in LaunchDarkly (e.g., a list like `["DEBUG", "INFO"]`).
+  * **Why it's required:** In production, you usually run at `INFO` or `ERROR` level to save disk space. If a bug happens, you can update the LaunchDarkly flag to `DEBUG`. This manager will see the change and immediately start showing those `slog.Debug` lines from your controller without you having to restart the server.
+
+-----
+
+### 4\. The Configuration Layer (`ld_client.go`)
+
+This is the **Infrastructure API**.
+
+  * **What it does:** It manages the connection to LaunchDarkly. It's smart enough to switch between "Offline Mode" (reading from a local `flags.json` file) and "Live Mode" (using a real SDK key and optionally Redis for high-performance caching).
+  * **Why it's required:** It ensures that your application is resilient. If the internet goes down, the app can fall back to local files or a Redis cache so the APIs don't break.
+
+-----
+
+### Summary: Why this many?
+
+1.  **To separate concerns:** The `Controller` handles the web request, the `Service` handles the "Should I do this?" logic, and the `LogManager` handles the "How much should I talk?" logic.
+2.  **To test different Scenarios:** By having both `booleanattributestest` and `booleantest`, you can test if your LaunchDarkly rules work correctly when attributes are missing versus when they are present.
+3.  **To simulate a real environment:** The `MockTargetAPI` allows you to run this whole project on your laptop and see a "Successful" response without needing a real database or secondary microservice.
+
+**Essentially: It's a lab environment to prove that you can control every aspect of your app (traffic, logic, and logging) from a remote dashboard.**
+
+
+The code you've provided isn't just a simple "Hello World" app; it is a sophisticated boilerplate designed to demonstrate **Feature Management** and **Dynamic Configuration** using LaunchDarkly.
+
+The reason there are multiple APIs and layers is to show how you can control application behavior (like blocking a request or changing log levels) in real-time without redeploying your code.
+
+-----
+
+### 1\. The HTTP API Endpoints (`controller.go`)
+
+These are the entry points for external users.
+
+| API Endpoint | What it does | What it needs |
+| :--- | :--- | :--- |
+| `GET /locations/:locationId/booleanattributestest` | **The "Rich Context" Test.** It checks if a feature is enabled based on specific user attributes (where they are coming from, what store they are in). | **Path:** `locationId`<br>**Query Params:** `sourceSystem`, `sourceChannel`, `store`. |
+| `GET /locations/:locationId/booleantest` | **The "Simple" Test.** It checks the same feature flag but uses a bare-minimum context (just the ID). Useful for testing default behaviors. | **Path:** `locationId`. |
+| `GET /api/mock/locations/:locationId` | **The Mock Target.** This isn't a real business API; it acts as the "Destination" for the `WebClientService` to call so you can see the full flow locally. | **Path:** `locationId`. |
+
+-----
+
+### 2\. The Logic Layer (`serviceapp.go`)
+
+This is the **"Kill Switch"** layer. This isn't an API exposed to the web, but an internal service API used by the controller.
+
+  * **What it does:** Before it makes a network call to fetch data, it asks LaunchDarkly: *"Is the feature 'location-feature-flag' enabled for this specific user/context?"*
+  * **Why it's required:** It demonstrates a **Circuit Breaker** or **Kill Switch** pattern. If a downstream service is failing, you can flip a switch in LaunchDarkly, and this code will block the request immediately at line 40, saving resources and preventing errors.
+
+-----
+
+### 3\. The Dynamic Logging API (`log_manager.go`)
+
+This represents a **Configuration API**. It doesn't have a URL; instead, it "polls" LaunchDarkly in the background.
+
+  * **What it does:** It watches a JSON flag in LaunchDarkly (e.g., a list like `["DEBUG", "INFO"]`).
+  * **Why it's required:** In production, you usually run at `INFO` or `ERROR` level to save disk space. If a bug happens, you can update the LaunchDarkly flag to `DEBUG`. This manager will see the change and immediately start showing those `slog.Debug` lines from your controller without you having to restart the server.
+
+-----
+
+### 4\. The Configuration Layer (`ld_client.go`)
+
+This is the **Infrastructure API**.
+
+  * **What it does:** It manages the connection to LaunchDarkly. It's smart enough to switch between "Offline Mode" (reading from a local `flags.json` file) and "Live Mode" (using a real SDK key and optionally Redis for high-performance caching).
+  * **Why it's required:** It ensures that your application is resilient. If the internet goes down, the app can fall back to local files or a Redis cache so the APIs don't break.
+
+-----
+
+### Summary: Why this many?
+
+1.  **To separate concerns:** The `Controller` handles the web request, the `Service` handles the "Should I do this?" logic, and the `LogManager` handles the "How much should I talk?" logic.
+2.  **To test different Scenarios:** By having both `booleanattributestest` and `booleantest`, you can test if your LaunchDarkly rules work correctly when attributes are missing versus when they are present.
+3.  **To simulate a real environment:** The `MockTargetAPI` allows you to run this whole project on your laptop and see a "Successful" response without needing a real database or secondary microservice.
+
+**Essentially: It's a lab environment to prove that you can control every aspect of your app (traffic, logic, and logging) from a remote dashboard.**
 ## Conclusion
 
 The `LDKillSwitch` library gives you a fast, resilient, and developer‑friendly way to integrate LaunchDarkly into Go microservices. By adding an in‑memory cache, offline mode, Redis support, and dynamic log‑level control, it removes the friction that often comes with feature flag systems. The `SampleApp` demonstrates real‑world patterns that you can adapt to your own services.
