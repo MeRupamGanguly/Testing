@@ -335,7 +335,42 @@ This is the **Infrastructure API**.
   * **Why it's required:** It ensures that your application is resilient. If the internet goes down, the app can fall back to local files or a Redis cache so the APIs don't break.
 
 -----
+The `cache.go` file acts as the "Engine Room" for your feature flag system. While LaunchDarkly has its own internal caching, this layer provides a local, high-performance in-memory cache to ensure your application doesn't experience latency when checking flags thousands of times per second.
 
+Each method serves a specific functional purpose for performance, type safety, or real-time responsiveness:
+
+### 1. The Setup: `NewFeatureFlagCache`
+* **Purpose**: This is the constructor that initializes the `go-cache` instance.
+* **Why it's required**: It defines how long a flag value stays "fresh" in memory (`expirationTime`) and how often the system purges old data (`cleanupInterval`). This ensures you aren't wasting RAM on stale flag data.
+
+### 2. Type-Specific Performance: `GetBooleanFlagValue` & `GetStringFlagValue`
+* **Purpose**: These provide fast lookups for simple flag types (True/False or Text).
+* **Why they are required**:
+    * **Type Safety**: LaunchDarkly’s Go SDK is strongly typed; you must call the specific method (`BoolVariation` or `StringVariation`) that matches the flag type in the dashboard.
+    * **Efficiency**: By checking the local `flagCache` first, you avoid the overhead of the full LaunchDarkly evaluation logic for every single request.
+
+### 3. Complex Data Handling: `GetJSONFlagValue` & `convertToLDValue`
+* **Purpose**: These handle complex objects like configuration maps or lists of strings.
+* **Why they are required**: 
+    * **The Compatibility Bridge**: LaunchDarkly requires complex types to be passed as `ldvalue.Value`. `convertToLDValue` is a helper that translates standard Go interfaces into a format the SDK understands.
+    * **Structure**: `GetJSONFlagValue` allows you to store entire "feature configurations" (not just on/off switches) in memory for instant access.
+
+### 4. The Real-Time Exception: `GetJSONFlagNoCache`
+* **Purpose**: This method explicitly ignores the local cache and asks the LaunchDarkly client for the absolute latest value.
+* **Why it's required**:
+    * **Immediate Response**: Some features cannot wait for a cache to expire. 
+    * **Example Case**: Your `LogLevelManager` uses this method. If you are debugging a live issue and change the log level from `ERROR` to `DEBUG` in the dashboard, you want that change to happen **immediately** across your system without waiting for a 5-minute cache TTL.
+
+---
+
+### Summary Table: When to use which?
+
+| Method | Use Case | Performance |
+| :--- | :--- | :--- |
+| **`GetBoolean...`** | Standard Kill Switches (On/Off) | **Fastest** (In-memory) |
+| **`GetString...`** | Dynamic URLs or Labels | **Fastest** (In-memory) |
+| **`GetJSON...`** | Complex Config Objects | **Fast** (In-memory) |
+| **`GetJSONNoCache`** | System Overrides (like Log Levels) | **Slower** (SDK Eval) |
 ### Summary: Why this many?
 
 1.  **To separate concerns:** The `Controller` handles the web request, the `Service` handles the "Should I do this?" logic, and the `LogManager` handles the "How much should I talk?" logic.
