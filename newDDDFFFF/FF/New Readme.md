@@ -383,3 +383,67 @@ Each method serves a specific functional purpose for performance, type safety, o
 The `LDKillSwitch` library gives you a fast, resilient, and developer‑friendly way to integrate LaunchDarkly into Go microservices. By adding an in‑memory cache, offline mode, Redis support, and dynamic log‑level control, it removes the friction that often comes with feature flag systems. The `SampleApp` demonstrates real‑world patterns that you can adapt to your own services.
 
 Use this library to reduce latency, increase reliability, and gain instant observability control – all while keeping your code clean and testable.
+
+
+
+
+
+The three core cache APIs – `GetBooleanFlagValue`, `GetStringFlagValue`, and `GetJSONFlagValue` – each follow the same internal pattern but with different type handling. Here’s exactly how data flows from your controller down to the LaunchDarkly core library and back.
+
+## Internal call chain for any of the three APIs
+
+```
+Controller → Service → FeatureFlagCache → go-cache → LaunchDarkly SDK → (optional Redis / LD servers)
+```
+
+### Step‑by‑step breakdown
+
+**1. Controller calls service layer**  
+In `controller.go`, you call `webClientService.Get()`, which internally calls `featureFlagService.IsFeatureEnabled()` (for a boolean flag). That service method is a thin wrapper around the cache.
+
+**2. Service calls the corresponding cache method**  
+`IsFeatureEnabled` calls `cache.GetBooleanFlagValue()`. Similarly, `GetStringFlag` calls `GetStringFlagValue`, and `GetJSONFlag` calls `GetJSONFlagValue`.
+
+**3. Cache method constructs a type‑prefixed key**  
+Example for boolean: `cacheKey := fmt.Sprintf("bool:%s:%s", flagKey, ctx.Key())`  
+This key uniquely identifies the flag value for that flag key and context key.
+
+**4. Cache checks local in‑memory store (`go-cache`)**  
+- If `cacheEnabled` is true and the key exists and hasn’t expired, the cached value is returned immediately.  
+- For boolean/string, the value is cast to the correct type (`val.(bool)`). For JSON, the stored `interface{}` is returned as‑is.
+
+**5. On cache miss, the cache calls the LaunchDarkly SDK**  
+- `GetBooleanFlagValue` → `f.ldClient.BoolVariation(flagKey, ctx, defaultValue)`  
+- `GetStringFlagValue` → `f.ldClient.StringVariation(...)`  
+- `GetJSONFlagValue` → first converts the Go `defaultValue` to an `ldvalue.Value` via `convertToLDValue()` (JSON marshal/unmarshal), then calls `f.ldClient.JSONVariation(...)`
+
+**6. The LaunchDarkly SDK evaluates the flag**  
+- If in **live mode** (SDK key present), the SDK uses its internal rule cache (populated by a streaming connection to LaunchDarkly servers) to evaluate the flag against the provided context. No network call happens per evaluation – the rules are already local.  
+- If in **offline mode** (no SDK key or `offline: true`), the SDK reads flag rules from the local `flags.json` file (via `ldfiledata`) and evaluates them locally.
+
+**7. The SDK returns the evaluated value**  
+- `BoolVariation` returns a `bool`  
+- `StringVariation` returns a `string`  
+- `JSONVariation` returns an `ldvalue.Value` (which the cache then converts to a raw Go type via `.AsRaw()`)
+
+**8. The cache stores the fresh value**  
+`f.flagCache.Set(cacheKey, freshValue, cache.DefaultExpiration)` – using the TTL configured in `NewFeatureFlagCache`.
+
+**9. The value returns up the chain**  
+Cache → service → controller → HTTP response.
+
+## How data goes to the core library (LaunchDarkly)
+
+- **Live mode** – The LaunchDarkly SDK maintains a persistent streaming connection to `https://app.launchdarkly.com`. Flag rule updates are pushed to the SDK in real time. The SDK stores them in memory (and optionally in Redis if configured). When `BoolVariation` is called, the SDK evaluates the rule locally using those in‑memory rules – **no per‑call network latency**.
+- **Offline mode** – The SDK reads `flags.json` at startup and watches for file changes. All evaluations are purely local; no data ever leaves your process.
+
+The `FeatureFlagCache` sits **in front** of the SDK, caching the *result* of the evaluation. This avoids calling the SDK at all for repeated identical flag+context requests.
+
+## Why three separate APIs?
+
+Each cache method is tailored to the SDK method it calls and the type it returns. They cannot be combined because:
+- The SDK has no generic `Variation` method.
+- Cache keys need type prefixes (`bool:`, `str:`, `json:`) to prevent collisions.
+- JSON flags require an extra conversion step (`convertToLDValue`) that would be wasted on bool/string flags.
+
+So the three APIs mirror the three SDK evaluation methods, with caching added transparently.
