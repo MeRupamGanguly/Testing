@@ -22,12 +22,12 @@ sleep 5
 
 # 2. Run migrations
 echo -e "${GREEN}Running database migrations...${NC}"
-docker exec -i test-postgres psql -U postgres -d ecommerce < sampleApp/migrations/schema.sql
+docker exec -i test-postgres psql -U postgres -d ecommerce < sampleApp/schema.sql
 
 # 3. Build test image
 echo -e "${GREEN}Building test container...${NC}"
 docker build -t ecommerce-test -f - . <<EOF
-FROM golang:1.23-alpine
+FROM golang:1.26.1-alpine
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -35,16 +35,19 @@ COPY . .
 RUN go build -o /app/order-service ./sampleApp/cmd
 EOF
 
-# 4. Run unit tests (mock repo, no DB required)
+# 4. Run unit tests
 echo -e "${GREEN}Running unit tests...${NC}"
 docker run --rm ecommerce-test go test -v -cover ./...
 
 # 5. Run the service with PostgreSQL
+# Setting the working directory to /app/sampleApp/cmd ensures 
+# that the binary finds ../../config.yaml at /app/config.yaml
 echo -e "${GREEN}Starting order-service...${NC}"
 docker rm -f order-service 2>/dev/null || true
 docker run -d --name order-service \
   --network host \
-  -v $(pwd)/config.yaml:/root/config.yaml \
+  -w /app/sampleApp/cmd \
+  -v $(pwd)/config.yaml:/app/config.yaml:Z \
   ecommerce-test /app/order-service
 
 sleep 3
