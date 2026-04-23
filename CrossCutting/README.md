@@ -417,8 +417,6 @@ Feel free to extend or reorganise the code; the module structure is intentionall
 
 
 
-
-
 #!/bin/bash
 set -e
 
@@ -445,7 +443,7 @@ NC='\033[0m'
 echo -e "${YELLOW}Cleaning up any previous test resources...${NC}"
 docker stop "$CONTAINER_NAME" "$REDIS_CONTAINER" 2>/dev/null || true
 docker rm "$CONTAINER_NAME" "$REDIS_CONTAINER" 2>/dev/null || true
-docker network rm -f "$NETWORK_NAME" 2>/dev/null || true
+docker network rm "$NETWORK_NAME" 2>/dev/null || true
 docker network prune -f 2>/dev/null || true
 
 # ------------------------------------------------------------
@@ -476,7 +474,7 @@ cleanup() {
     echo -e "${YELLOW}Cleaning up...${NC}"
     docker stop "$CONTAINER_NAME" "$REDIS_CONTAINER" 2>/dev/null || true
     docker rm "$CONTAINER_NAME" "$REDIS_CONTAINER" 2>/dev/null || true
-    docker network rm -f "$NETWORK_NAME" 2>/dev/null || true
+    docker network rm "$NETWORK_NAME" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -488,21 +486,21 @@ docker network create "$NETWORK_NAME"
 
 echo -e "${YELLOW}Starting Redis...${NC}"
 docker run -d --name "$REDIS_CONTAINER" --network "$NETWORK_NAME" \
-    redis:7-alpine
+    docker.io/library/redis:7-alpine
 
 # ------------------------------------------------------------
 # Build API container
 # ------------------------------------------------------------
 echo -e "${YELLOW}Building API image...${NC}"
 docker build -t "$IMAGE_NAME" -f - . <<'EOF'
-FROM golang:1.26.1-alpine AS builder
+FROM docker.io/library/golang:1.26.1-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /api ./cmd/main.go
 
-FROM alpine:latest
+FROM docker.io/library/alpine:latest
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /api /api
 EXPOSE 8080
