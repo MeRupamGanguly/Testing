@@ -1,5 +1,9 @@
 Below is the complete, updated `README.md` with a new **Error Handling** section that explains how Go manages exceptions without Java references.
+Here's a Jira comment in paragraph style that summarizes the deliverable and asks if any further requirements are needed:
 
+---
+
+Delivered the cross-cutting API layer in Go using the Gin framework. This includes structured JSON request logging with `slog`, JWT authentication with role‑based access control (admin/customer), rate limiting (both in‑memory token bucket and a Redis‑backed leaky bucket with fallback), custom input validation rules (SKU, price, phone) integrated with Gin’s binding, panic recovery middleware, and a consistent JSON response envelope for all endpoints. The service is containerized and comes with an automated end‑to‑end test script that covers all critical paths (health, auth, validation, authorization, and rate limiting). Please let me know if there are any specific requirements – such as additional HTTP headers, different error formats, monitoring hooks, or integration with an existing auth provider – that still need to be implemented.
 ---
 
 # Crosscutting API
