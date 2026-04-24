@@ -1,0 +1,13 @@
+server:
+  port: 8080
+jwt:
+  secret: "change-me-in-production"
+redis:
+  addr: "localhost:6379"
+rate_limit:
+  limit: 100
+  window: 1m
+limits:
+  max_header_bytes: 0 # 0 = disabled
+  max_request_body: 1048576 # 1 MB
+  max_response_body: 1048576 # 1 MB
