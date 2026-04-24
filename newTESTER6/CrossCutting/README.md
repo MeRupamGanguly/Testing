@@ -1,7 +1,5 @@
 Below is the complete, updated `README.md` with a new **Error Handling** section that explains how Go manages exceptions without Java references.
 
-
-
 #!/bin/bash
 set -e
 
@@ -134,11 +132,6 @@ else
 fi
 
 echo -e "\n\033[0;32mAll tests passed!\033[0m"
-
-
-
-
-
 
 
 
