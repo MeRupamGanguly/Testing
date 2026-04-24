@@ -1,5 +1,142 @@
 Below is the complete, updated `README.md` with a new **Error Handling** section that explains how Go manages exceptions without Java references.
 
+
+
+
+
+
+#!/bin/bash
+set -e
+
+# Config
+PORT=8080
+JWT_SECRET="super-secret-jwt-key-for-testing"
+BASE_URL="http://localhost:$PORT"
+REDIS_ADDR="none"   # skip Redis, fallback to in-memory
+
+# Generate JWT tokens
+b64enc() { echo -n "$1" | base64 | tr -d '=\n' | tr '/+' '_-'; }
+
+gen_jwt() {
+    local sub=$1 role=$2
+    local header='{"alg":"HS256","typ":"JWT"}'
+    local payload="{\"sub\":\"$sub\",\"role\":\"$role\",\"exp\":1999999999}"
+    local header_b64=$(b64enc "$header")
+    local payload_b64=$(b64enc "$payload")
+    local signature=$(echo -n "$header_b64.$payload_b64" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | base64 | tr -d '=\n' | tr '/+' '_-')
+    echo "$header_b64.$payload_b64.$signature"
+}
+
+CUSTOMER_TOKEN=$(gen_jwt "customer-123" "customer")
+ADMIN_TOKEN=$(gen_jwt "admin-1" "admin")
+
+# Start the server
+echo "Starting server..."
+export JWT_SECRET="$JWT_SECRET"
+export REDIS_ADDR="$REDIS_ADDR"
+export PORT="$PORT"
+go run main.go &
+SERVER_PID=$!
+sleep 3  # wait for server to start
+
+# Cleanup on exit
+trap 'echo "Stopping server..."; kill $SERVER_PID; wait $SERVER_PID 2>/dev/null' EXIT
+
+# Wait for server ready
+for i in {1..10}; do
+    if curl -s "$BASE_URL/health" >/dev/null; then
+        echo "Server ready."
+        break
+    fi
+    sleep 1
+done
+
+# Helper function
+test_endpoint() {
+    local desc="$1"; shift
+    local method="$1"; shift
+    local url="$1"; shift
+    local expected_code="$1"; shift
+    echo -n "Testing $desc ... "
+    response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" "$@")
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    if [ "$http_code" -eq "$expected_code" ]; then
+        echo -e "\033[0;32mPASS\033[0m (HTTP $http_code)"
+    else
+        echo -e "\033[0;31mFAIL\033[0m (expected $expected_code, got $http_code)"
+        echo "Body: $body"
+        exit 1
+    fi
+}
+
+echo -e "\nRunning tests...\n"
+
+# 1. Health
+test_endpoint "health" GET "$BASE_URL/health" 200
+
+# 2. No token -> 401
+test_endpoint "profile without token" GET "$BASE_URL/api/v1/profile" 401
+
+# 3. Customer token -> 200
+test_endpoint "profile with customer token" GET "$BASE_URL/api/v1/profile" 200 \
+    -H "Authorization: Bearer $CUSTOMER_TOKEN"
+
+# 4. Invalid order -> 400
+test_endpoint "invalid order payload" POST "$BASE_URL/api/v1/orders" 400 \
+    -H "Authorization: Bearer $CUSTOMER_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"product_sku":"bad","quantity":0,"price":-1}'
+
+# 5. Valid order -> 201
+test_endpoint "valid order payload" POST "$BASE_URL/api/v1/orders" 201 \
+    -H "Authorization: Bearer $CUSTOMER_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"product_sku":"SKU12345","quantity":2,"price":29.99}'
+
+# 6. Admin with customer -> 403
+test_endpoint "admin endpoint with customer" GET "$BASE_URL/api/v1/admin/users" 403 \
+    -H "Authorization: Bearer $CUSTOMER_TOKEN"
+
+# 7. Admin with admin -> 200
+test_endpoint "admin endpoint with admin" GET "$BASE_URL/api/v1/admin/users" 200 \
+    -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# 8. Rate limit test
+echo -n "Testing rate limiting (25 rapid requests) ... "
+RATE_LIMIT_HIT=0
+for i in {1..25}; do
+    code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $CUSTOMER_TOKEN" "$BASE_URL/api/v1/profile")
+    if [ "$code" -eq 429 ]; then
+        RATE_LIMIT_HIT=1
+        break
+    fi
+done
+if [ "$RATE_LIMIT_HIT" -eq 1 ]; then
+    echo -e "\033[0;32mPASS\033[0m (429 received)"
+else
+    echo -e "\033[0;31mFAIL\033[0m (no rate limit triggered)"
+    exit 1
+fi
+
+echo -e "\n\033[0;32mAll tests passed!\033[0m"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ---
 
 # Crosscutting API
