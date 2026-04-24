@@ -492,21 +492,21 @@ echo -e "${YELLOW}Starting Redis...${NC}"
 docker run -d --name "$REDIS_CONTAINER" --network "$NETWORK_NAME" \
     docker.io/library/redis:7-alpine
 
-# ------------------------------------------------------------
-# Build API container
-# ------------------------------------------------------------
+# Build API container (clean build, no cache)
 echo -e "${YELLOW}Building API image...${NC}"
-docker build -t "$IMAGE_NAME" -f - . <<'EOF'
+docker build --no-cache -t "$IMAGE_NAME" -f - . <<'EOF'
 FROM docker.io/library/golang:1.26.1-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /api ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /api ./cmd
 
 FROM docker.io/library/alpine:latest
 RUN apk --no-cache add ca-certificates
+WORKDIR /
 COPY --from=builder /api /api
+COPY --from=builder /app/cmd/config.yaml /config.yaml
 EXPOSE 8080
 ENTRYPOINT ["/api"]
 EOF
@@ -597,7 +597,7 @@ test_endpoint "admin endpoint with customer" "GET" "$BASE_URL/api/v1/admin/users
 test_endpoint "admin endpoint with admin" "GET" "$BASE_URL/api/v1/admin/users" 200 \
     -H "Authorization: Bearer $TOKEN_ADMIN"
 
-# 8. Rate limiting (expect 429 after many requests)
+# 8. Rate limiting
 echo -n "Testing rate limiting (101 rapid requests) ... "
 RATE_LIMIT_HIT=0
 for i in {1..101}; do
